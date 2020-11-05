@@ -3,7 +3,8 @@
 . "${PSScriptRoot}\SemVer.ps1"
 
 $RELEASE_TITLE_REGEX = "(?<releaseNoteTitle>^\#+.*(?<version>\b\d+\.\d+\.\d+([^0-9\s][^\s:]+)?)(\s(?<releaseStatus>\(Unreleased\)|\(\d{4}-\d{2}-\d{2}\)))?)"
-$UNRELEASED_TAG = "(Unreleased)"
+$CHANGELOG_UNRELEASED_STATUS = "(Unreleased)"
+$CHANGELOG_DATE_FORMAT = "yyyy-MM-dd"
 
 # Returns a Collection of changeLogEntry object containing changelog info for all version present in the gived CHANGELOG
 function Get-ChangeLogEntries {
@@ -103,12 +104,12 @@ function Confirm-ChangeLogEntry {
   Write-Host "-----"
 
   if ([System.String]::IsNullOrEmpty($changeLogEntry.ReleaseStatus)) {
-    Write-Error "Entry does not have a correct release status. Please ensure the status is set to a date '(yyyy-MM-dd)' or '$UNRELEASED_TAG' if not yet released."
+    Write-Error "Entry does not have a correct release status. Please ensure the status is set to a date '(yyyy-MM-dd)' or '$CHANGELOG_UNRELEASED_STATUS' if not yet released."
     return $false
   }
 
   if ($ForRelease -eq $True) {
-    if ($changeLogEntry.ReleaseStatus -eq $UNRELEASED_TAG) {
+    if ($changeLogEntry.ReleaseStatus -eq $CHANGELOG_UNRELEASED_STATUS) {
       Write-Error "Entry has no release date set. Please ensure to set a release date with format 'yyyy-MM-dd'."
       return $false
     }
@@ -126,25 +127,34 @@ function New-ChangeLogEntry {
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [String]$Version,
-    [String]$Status=$UNRELEASED_TAG,
+    [String]$Status=$CHANGELOG_UNRELEASED_STATUS,
     [String]$Title,
-    [String[]]$Content
+    [String[]]$Content,
+    [String]$IgnoreInvalids=$True
   )
 
-  # Validate relase Status
+  # Validate RelaseStatus
   $Status = $Status.Trim().Trim("()")
   if ($Status -ne "Unreleased") {
-    $dateFormat = "yyyy-MM-dd"
-    $provider = [System.Globalization.CultureInfo]::InvariantCulture
     try {
-      $Status = ([System.DateTime]::ParseExact($Status, $dateFormat, $provider)).ToString($dateFormat)
+      $Status = ([DateTime]$Status).ToString($CHANGELOG_DATE_FORMAT)
     }
     catch {
-        LogWarning "Invalid date [ $Status ] passed as status for Version [$Version]. Please use a valid date in the format '$dateFormat' or use '$UNRELEASED_TAG'"
+        LogWarning "Invalid date [ $Status ] passed as status for Version [$Version]. Please use a valid date in the format '$CHANGELOG_DATE_FORMAT' or use '$CHANGELOG_UNRELEASED_STATUS'"
+        if (!$IgnoreInvalids) { exit 1 }
     }
   }
-
   $Status = "($Status)"
+
+  # Validate Version
+  try {
+    $Version = ([AzureEngSemanticVersion]::ParseVersionString($Version)).ToString()
+  }
+  catch {
+    LogWarning "Invalid version [ $Version ]."
+    if (!$IgnoreInvalids) { exit 1 }
+  }
+
   if (!$Content) { $Content = @() }
   if (!$Title) { $Title = "## $Version $Status" }
 
@@ -182,7 +192,12 @@ function Set-ChangeLogContent {
   foreach ($version in $VersionsSorted) {
     $changeLogEntry = $ChangeLogEntries[$version]
     $changeLogContent += $changeLogEntry.ReleaseTitle
-    $changeLogContent += $changeLogEntry.ReleaseContent
+    if ($changeLogEntry.ReleaseContent.Count -eq 0) {
+      $changeLogContent += @("","")
+    }
+    else {
+      $changeLogContent += $changeLogEntry.ReleaseContent
+    }
   }
 
   Set-Content -Path $ChangeLogLocation -Value $changeLogContent
